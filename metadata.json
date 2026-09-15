@@ -1,0 +1,6 @@
+{
+  "name": "Control de Precios de Cierre",
+  "description": "Gestión, registro e historial de precios de cierre para Portafolio Nacional (MERCOSUR/BVC) e Internacional (Binance bStock)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
