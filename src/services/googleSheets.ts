@@ -4,7 +4,7 @@ import firebaseConfig from '../../firebase-applet-config.json';
 import { PrecioCierreRegistro, PortfolioPosicion, PosicionInternacional, EmpresaDatos } from '../types';
 import { parseNumberInput, formatDateLatina, normalizeTicker, normalizeRegistro } from '../utils/formatters';
 
-// Inicializar Firebase
+// Inicializar Firebase (Opcional)
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
@@ -15,7 +15,7 @@ provider.addScope('https://www.googleapis.com/auth/drive.file');
 let cachedAccessToken: string | null = null;
 let isSigningIn = false;
 
-// Configurar listener del estado de autenticación
+// Listener para el estado de autenticación (retrocompatibilidad)
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
@@ -54,7 +54,11 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const logoutGoogle = async () => {
-  await signOut(auth);
+  try {
+    await signOut(auth);
+  } catch (e) {
+    // Ignorar si no había sesión activa
+  }
   cachedAccessToken = null;
 };
 
@@ -62,60 +66,50 @@ export const getAccessToken = (): string | null => {
   return cachedAccessToken;
 };
 
-// Crear una hoja nueva de Google Spreadsheet con las pestañas RESUMEN y PRECIOS_CIERRE
-export const createPreciosSpreadsheet = async (token: string, title = 'Control de Portafolio MERCOSUR'): Promise<string> => {
-  const response = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      properties: {
-        title,
-      },
-      sheets: [
-        { properties: { title: 'RESUMEN ACTUAL' } },
-        { properties: { title: 'PRECIOS_CIERRE' } },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || 'Error al crear la hoja en Google Sheets');
+// Parser robusto de CSV para hojas de Google Sheets públicas
+const parseCsvRows = (text: string): string[][] => {
+  const lines = text.split(/\r?\n/);
+  const result: string[][] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const row: string[] = [];
+    let insideQuote = false;
+    let entry = '';
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        if (insideQuote && line[i + 1] === '"') {
+          entry += '"';
+          i++;
+        } else {
+          insideQuote = !insideQuote;
+        }
+      } else if ((char === ',' || char === ';') && !insideQuote) {
+        row.push(entry.trim());
+        entry = '';
+      } else {
+        entry += char;
+      }
+    }
+    row.push(entry.trim());
+    result.push(row);
   }
+  return result;
+};
 
-  const data = await response.json();
-  const spreadsheetId = data.spreadsheetId;
-
-  // Insertar cabeceras en PRECIOS_CIERRE
-  const headerValues = [
-    [
-      'Fecha (DD/MM/AAAA)',
-      'BNC - Precio Cierre (Bs.)',
-      'BNC - Var %',
-      'BPV - Precio Cierre (Bs.)',
-      'BPV - Var %',
-      'BVCC - Precio Cierre (Bs.)',
-      'BVCC - Var %',
-      'RST-B - Precio Cierre (Bs.)',
-      'RST-B - Var %',
-    ],
-  ];
-
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/PRECIOS_CIERRE!A1:I1?valueInputOption=USER_ENTERED`, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      values: headerValues,
-    }),
-  });
-
-  return spreadsheetId;
+// Intenta descargar el contenido CSV de una pestaña en una hoja compartida públicamente
+const fetchCsvFromPublicSheet = async (spreadsheetId: string, sheetName: string): Promise<string[][] | null> => {
+  try {
+    const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (!text || text.includes('<!DOCTYPE html>') || text.toLowerCase().includes('<html')) return null;
+    const parsed = parseCsvRows(text);
+    return parsed.length > 0 ? parsed : null;
+  } catch (e) {
+    return null;
+  }
 };
 
 // Extrae el ticker de una cabecera de columna de Google Sheets
@@ -138,27 +132,10 @@ const extractTickerFromHeader = (headerStr: string): { ticker: string; isVar: bo
   return { ticker, isVar };
 };
 
-// Leer de forma totalmente dinámica todos los precios e historial desde PRECIOS_CIERRE
-export const fetchRegistrosFromSheet = async (token: string, spreadsheetId: string): Promise<PrecioCierreRegistro[]> => {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/PRECIOS_CIERRE!A1:Z500`;
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error('No se encontró la hoja de cálculo especificada.');
-    }
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || 'Error al leer datos de Google Sheets');
-  }
-
-  const data = await response.json();
-  const rows: any[][] = data.values || [];
-
+// Procesa filas bidimensionales de datos de PRECIOS_CIERRE
+const processPreciosRows = (rows: any[][]): PrecioCierreRegistro[] => {
   if (rows.length === 0) return [];
 
-  // Fila 0: Cabeceras
   const headers = rows[0];
   const columnMapping: Array<{ colIndex: number; ticker: string; field: 'precio' | 'varDiaria' }> = [];
 
@@ -227,33 +204,42 @@ export const fetchRegistrosFromSheet = async (token: string, spreadsheetId: stri
   return registros.map(normalizeRegistro);
 };
 
-// Leer los portafolios (Nacional e Internacional) dinámicamente desde la primera pestaña (RESUMEN ACTUAL / PORTAFOLIO)
-export const fetchResumenFromSheet = async (
-  token: string,
+// Leer de forma totalmente dinámica todos los precios e historial desde PRECIOS_CIERRE (Public CSV o API Token)
+export const fetchRegistrosFromSheet = async (
+  token: string | null,
   spreadsheetId: string
-): Promise<{ nacional: PortfolioPosicion[]; internacional: PosicionInternacional[] }> => {
-  // Intentar leer la primera hoja
-  const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
-  const metaRes = await fetch(metaUrl, { headers: { Authorization: `Bearer ${token}` } });
-  
-  let sheetName = 'RESUMEN ACTUAL';
-  if (metaRes.ok) {
-    const metaData = await metaRes.json();
-    if (metaData.sheets && metaData.sheets.length > 0) {
-      sheetName = metaData.sheets[0].properties?.title || 'RESUMEN ACTUAL';
+): Promise<PrecioCierreRegistro[]> => {
+  // 1. Intentar lectura por exportación CSV pública (Sin requerir token / sin inicio de sesión)
+  const publicRows = await fetchCsvFromPublicSheet(spreadsheetId, 'PRECIOS_CIERRE');
+  if (publicRows && publicRows.length > 0) {
+    return processPreciosRows(publicRows);
+  }
+
+  // 2. Si es privada y se provee token, usar API v4 de Google Sheets
+  if (!token) {
+    throw new Error('Para leer esta hoja privada, la hoja debe estar compartida como "Cualquier persona con el enlace puede ver" o bien requiere inicio de sesión.');
+  }
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/PRECIOS_CIERRE!A1:Z500`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error('No se encontró la hoja de cálculo especificada.');
     }
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || 'Error al leer datos de Google Sheets');
   }
 
-  const valuesUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${encodeURIComponent(sheetName)}'!A1:U100`;
-  const valRes = await fetch(valuesUrl, { headers: { Authorization: `Bearer ${token}` } });
+  const data = await response.json();
+  const rows: any[][] = data.values || [];
+  return processPreciosRows(rows);
+};
 
-  if (!valRes.ok) {
-    return { nacional: [], internacional: [] };
-  }
-
-  const valData = await valRes.json();
-  const rows: any[][] = valData.values || [];
-
+// Procesa filas de la pestaña RESUMEN ACTUAL
+const processResumenRows = (rows: any[][]): { nacional: PortfolioPosicion[]; internacional: PosicionInternacional[] } => {
   const nacional: PortfolioPosicion[] = [];
   const internacional: PosicionInternacional[] = [];
 
@@ -265,7 +251,6 @@ export const fetchResumenFromSheet = async (
 
     const firstCell = String(row[0] || '').trim();
 
-    // Detección de inicio de tabla Global Nacional MERCOSUR (Ignorando la tabla RESUMEN ACTUAL ACCIONES)
     if (
       (firstCell.toLowerCase().includes('global de acciones') || firstCell.toLowerCase().includes('global')) &&
       !firstCell.toLowerCase().includes('resumen actual')
@@ -274,7 +259,6 @@ export const fetchResumenFromSheet = async (
       continue;
     }
 
-    // Cabecera secundaria si la fila contiene Accion, Cantidad, Precio Promedio
     if (
       modo === 'none' &&
       firstCell.toLowerCase() === 'accion' &&
@@ -284,7 +268,6 @@ export const fetchResumenFromSheet = async (
       continue;
     }
 
-    // Detección de inicio de tabla Internacional
     if (
       firstCell.toLowerCase().includes('empresa / cripto') ||
       firstCell.toLowerCase().includes('empresa/cripto') ||
@@ -296,13 +279,11 @@ export const fetchResumenFromSheet = async (
     }
 
     if (modo === 'nacional') {
-      // Ignorar cabeceras o filas vacías/totales
       if (!firstCell || firstCell.toLowerCase().includes('global') || firstCell.toLowerCase() === 'accion' || firstCell.toLowerCase().includes('totales')) {
         if (!firstCell) modo = 'none';
         continue;
       }
 
-      // Fila Global Nacional: Accion, Cantidad, Precio Promedio (Bs.), Inversion Total (Bs.), Precio Actual (Bs.), Valor Actual (Bs.), Rendimiento Neto, Precio Objetivo (50%), Estatus de Meta, Minigrafica, Ganancia / Perdida (Bs.)
       const rawCodigo = firstCell;
       const codigo = normalizeTicker(rawCodigo);
       const cantidad = parseNumberInput(row[1] || 0);
@@ -336,7 +317,6 @@ export const fetchResumenFromSheet = async (
         continue;
       }
 
-      // Fila Internacional: Empresa/Cripto, Fecha inicio, Fecha Fin, Inversion USDT, Valor Token, Precio Compra, Precio Actual...
       const activo = firstCell;
       const fechaInicio = row[1] ? String(row[1]).trim() : '';
       const fechaFin = row[2] ? String(row[2]).trim() : '';
@@ -367,13 +347,45 @@ export const fetchResumenFromSheet = async (
   return { nacional, internacional };
 };
 
+// Leer los portafolios (Nacional e Internacional) dinámicamente desde la primera pestaña (RESUMEN ACTUAL / PORTAFOLIO)
+export const fetchResumenFromSheet = async (
+  token: string | null,
+  spreadsheetId: string
+): Promise<{ nacional: PortfolioPosicion[]; internacional: PosicionInternacional[] }> => {
+  // 1. Intentar lectura mediante CSV público
+  const publicRows = await fetchCsvFromPublicSheet(spreadsheetId, 'RESUMEN ACTUAL');
+  if (publicRows && publicRows.length > 0) {
+    return processResumenRows(publicRows);
+  }
+
+  // 2. Si no es pública y se provee token, usar API REST de Google Sheets
+  if (!token) {
+    return { nacional: [], internacional: [] };
+  }
+
+  const valuesUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'RESUMEN ACTUAL'!A1:U100`;
+  const valRes = await fetch(valuesUrl, { headers: { Authorization: `Bearer ${token}` } });
+
+  if (!valRes.ok) {
+    return { nacional: [], internacional: [] };
+  }
+
+  const valData = await valRes.json();
+  const rows: any[][] = valData.values || [];
+  return processResumenRows(rows);
+};
+
 // Guardar/Append fila en Google Sheets en PRECIOS_CIERRE
 export const appendRegistroToSheet = async (
-  token: string,
+  token: string | null,
   spreadsheetId: string,
   registro: Omit<PrecioCierreRegistro, 'id'>
 ): Promise<void> => {
-  // Primero leemos la fila 1 de PRECIOS_CIERRE para armar los valores en el orden exacto de las columnas
+  if (!token) {
+    // Si no hay token de inicio de sesión activo, la actualización se mantiene guardada localmente en localStorage
+    return;
+  }
+
   const headUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/PRECIOS_CIERRE!A1:Z1`;
   const headRes = await fetch(headUrl, { headers: { Authorization: `Bearer ${token}` } });
 
@@ -383,7 +395,6 @@ export const appendRegistroToSheet = async (
     headers = headData.values?.[0] || [];
   }
 
-  // Si no hay cabeceras, usamos las predeterminadas
   if (headers.length === 0) {
     headers = [
       'Fecha (DD/MM/AAAA)',
@@ -433,6 +444,61 @@ export const appendRegistroToSheet = async (
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error?.message || 'Error al guardar en Google Sheets');
   }
+};
+
+// Crear una hoja nueva de Google Spreadsheet
+export const createPreciosSpreadsheet = async (token: string, title = 'Control de Portafolio MERCOSUR'): Promise<string> => {
+  const response = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      properties: {
+        title,
+      },
+      sheets: [
+        { properties: { title: 'RESUMEN ACTUAL' } },
+        { properties: { title: 'PRECIOS_CIERRE' } },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error?.message || 'Error al crear la hoja en Google Sheets');
+  }
+
+  const data = await response.json();
+  const spreadsheetId = data.spreadsheetId;
+
+  const headerValues = [
+    [
+      'Fecha (DD/MM/AAAA)',
+      'BNC - Precio Cierre (Bs.)',
+      'BNC - Var %',
+      'BPV - Precio Cierre (Bs.)',
+      'BPV - Var %',
+      'BVCC - Precio Cierre (Bs.)',
+      'BVCC - Var %',
+      'RST-B - Precio Cierre (Bs.)',
+      'RST-B - Var %',
+    ],
+  ];
+
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/PRECIOS_CIERRE!A1:I1?valueInputOption=USER_ENTERED`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      values: headerValues,
+    }),
+  });
+
+  return spreadsheetId;
 };
 
 // Buscar archivos en Google Drive

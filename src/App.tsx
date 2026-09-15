@@ -14,7 +14,7 @@ import { PortfolioSummary } from './components/PortfolioSummary';
 import { InternationalPortfolio } from './components/InternationalPortfolio';
 import { Toast } from './components/Toast';
 import { GoogleSheetsSync } from './components/GoogleSheetsSync';
-import { getAccessToken, appendRegistroToSheet, initAuth } from './services/googleSheets';
+import { getAccessToken, appendRegistroToSheet } from './services/googleSheets';
 
 export default function App() {
   // Pestaña activa: 'form' (Registrar Precios Diarios) por defecto
@@ -76,10 +76,6 @@ export default function App() {
   // Notificaciones Toast
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  // Inicializar listener de Firebase Auth
-  useEffect(() => {
-    initAuth();
-  }, []);
 
   // Guardar historial en localStorage
   useEffect(() => {
