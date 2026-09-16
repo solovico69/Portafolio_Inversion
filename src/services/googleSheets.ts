@@ -64,10 +64,19 @@ const extractTickerFromHeader = (headerStr: string): { ticker: string; isVar: bo
     .replace(/-?\s*Precio.*$/i, '')
     .replace(/-?\s*Var.*$/i, '')
     .replace(/-?\s*%.*$/i, '')
+    .replace(/Variacion\s+Diaria\s*/i, '')
     .replace(/\(Bs\.\)/i, '')
     .replace(/\(\$\s*USDT\)/i, '')
     .replace(/\(\$\)/i, '')
     .trim();
+
+  if (rawTicker.startsWith('(') && rawTicker.endsWith(')')) {
+    rawTicker = rawTicker.substring(1, rawTicker.length - 1).trim();
+  }
+
+  if (rawTicker.includes('SPYD')) {
+    rawTicker = rawTicker.replace('SPYD', 'SPYB');
+  }
 
   const ticker = normalizeTicker(rawTicker);
   if (ticker.toUpperCase() === 'TICKER') return { ticker: '', isVar };
@@ -231,25 +240,26 @@ const processResumenRows = (rows: any[][]): { nacional: PortfolioPosicion[]; int
         });
       }
     } else if (modo === 'internacional') {
-      if (!firstCell) {
-        modo = 'none';
+      if (!firstCell || firstCell.toLowerCase().includes('empresa') || firstCell.toLowerCase().includes('compra') || firstCell.toLowerCase().includes('totales')) {
         continue;
       }
 
-      const activo = firstCell;
+      const rawActivo = firstCell;
+      const activo = normalizeTicker(rawActivo);
       const fechaInicio = row[1] ? String(row[1]).trim() : '';
       const fechaFin = row[2] ? String(row[2]).trim() : '';
       const inversionUsdt = parseNumberInput(row[3] || 0);
       const valorToken = parseNumberInput(row[4] || 0);
       const precioInicialCompra = parseNumberInput(row[5] || 0);
       const precioActualUsdt = parseNumberInput(row[6] || 0);
-      const notas = row[11] ? String(row[11]).trim() : 'Binance bStock';
+      const notas = row[11] ? String(row[11]).trim() : (activo.includes('SPYB') ? 'Binance bStock / S&P 500 ETF' : 'Binance bStock / NVIDIA Corp');
       const estatusMeta = row[10] ? String(row[10]).trim() : '⏳ En Progreso';
 
       if (activo && (inversionUsdt > 0 || valorToken > 0)) {
         internacional.push({
           id: `inter-${i}-${activo}`,
           activo,
+          nombre: activo.includes('SPYB') ? 'SPDR S&P 500 ETF Tokenized' : activo.includes('NVDAB') ? 'NVIDIA Corp Tokenized' : activo,
           fechaInicio,
           fechaFin,
           valorToken,
