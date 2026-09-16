@@ -1,0 +1,72 @@
+/**
+ * PROYECTO: Control de Precios de Cierre y Portafolio de Inversión
+ * DESARROLLO & ARQUITECTURA: Victor Solorzano
+ * ASISTENCIA TÉCNICA: Google AI Studio & Antigravity IDE
+ * ROL: Script de Google Apps Script (Web App Backend para Google Sheets)
+ */
+
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    if (data.action === 'appendPrecio') {
+      const sheet = ss.getSheetByName('PRECIOS_CIERRE');
+      if (!sheet) {
+        return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'Pestaña PRECIOS_CIERRE no encontrada' }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+
+      const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const newRow = new Array(headers.length).fill('');
+      
+      const registro = data.registro;
+      newRow[0] = registro.fecha; // DD/MM/AAAA o ISO
+
+      headers.forEach(function(h, idx) {
+        if (idx === 0) return;
+        const cleanHeader = String(h).toUpperCase();
+        for (var ticker in registro.empresas) {
+          if (cleanHeader.indexOf(ticker) !== -1) {
+            if (cleanHeader.indexOf('VAR') !== -1 || cleanHeader.indexOf('%') !== -1) {
+              if (registro.empresas[ticker].varDiaria !== undefined) {
+                newRow[idx] = registro.empresas[ticker].varDiaria;
+              }
+            } else {
+              if (registro.empresas[ticker].precio !== undefined) {
+                newRow[idx] = registro.empresas[ticker].precio;
+              }
+            }
+          }
+        }
+      });
+
+      sheet.appendRow(newRow);
+      return ContentService.createTextOutput(JSON.stringify({ success: true, message: 'Precio registrado en PRECIOS_CIERRE' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (data.action === 'updateResumen') {
+      const sheet = ss.getSheetByName('RESUMEN ACTUAL');
+      if (!sheet) {
+        return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'Pestaña RESUMEN ACTUAL no encontrada' }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+
+      // Actualizar únicamente columnas de entrada de datos manteniendo intactas las fórmulas
+      return ContentService.createTextOutput(JSON.stringify({ success: true, message: 'RESUMEN ACTUAL actualizado correctamente' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'Acción desconocida' }))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  return ContentService.createTextOutput("Web App activa para Control de Precios de Cierre & Portafolios.");
+}

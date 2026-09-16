@@ -1,3 +1,10 @@
+/**
+ * PROYECTO: Control de Precios de Cierre y Portafolio de Inversión
+ * DESARROLLO & ARQUITECTURA: Victor Solorzano
+ * ASISTENCIA TÉCNICA: Google AI Studio & Antigravity IDE
+ * ROL: Componente de Cabecera y Navegación Principal
+ */
+
 import React from 'react';
 import { TrendingUp, FileSpreadsheet, PlusCircle, Table, BarChart3, PieChart, Globe, Sparkles } from 'lucide-react';
 import { PrecioCierreRegistro } from '../types';

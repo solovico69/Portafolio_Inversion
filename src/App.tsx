@@ -1,3 +1,10 @@
+/**
+ * PROYECTO: Control de Precios de Cierre y Portafolio de Inversión
+ * DESARROLLO & ARQUITECTURA: Victor Solorzano
+ * ASISTENCIA TÉCNICA: Google AI Studio & Antigravity IDE
+ * ROL: Controlador Principal de Estado y Vista (App.tsx)
+ */
+
 import React, { useState, useEffect } from 'react';
 import { PrecioCierreRegistro, PortfolioPosicion, PosicionInternacional, ToastMessage } from './types';
 import {
@@ -14,95 +21,43 @@ import { PortfolioSummary } from './components/PortfolioSummary';
 import { InternationalPortfolio } from './components/InternationalPortfolio';
 import { Toast } from './components/Toast';
 import { GoogleSheetsSync } from './components/GoogleSheetsSync';
-import { getAccessToken, appendRegistroToSheet } from './services/googleSheets';
+import { getAccessToken, appendRegistroToSheet, updateResumenInSheet, initAuth } from './services/googleSheets';
 
 export default function App() {
   // Pestaña activa: 'form' (Registrar Precios Diarios) por defecto
   const [activeTab, setActiveTab] = useState<'form' | 'portfolio' | 'international' | 'history' | 'charts'>('form');
 
-  // Spreadsheet ID de Google Sheets
+  // Spreadsheet ID & Apps Script Web App URL de Google Sheets
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
     return localStorage.getItem('google_spreadsheet_id');
   });
 
-  // Cargar registros de historial del localStorage o datos iniciales
-  const [registros, setRegistros] = useState<PrecioCierreRegistro[]>(() => {
-    try {
-      const saved = localStorage.getItem('precios_cierre_records');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(normalizeRegistro);
-        }
-      }
-    } catch (e) {
-      console.error('Error al cargar historial del localStorage', e);
-    }
-    return INITIAL_PRECIOS_CIERRE.map(normalizeRegistro);
+  const [appsScriptUrl, setAppsScriptUrl] = useState<string | null>(() => {
+    return localStorage.getItem('apps_script_url');
   });
 
-  // Cargar Portafolio Nacional (Casa de Bolsa MERCOSUR)
-  const [portfolioNacional, setPortfolioNacional] = useState<PortfolioPosicion[]>(() => {
-    try {
-      const saved = localStorage.getItem('portfolio_nacional');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.error('Error al cargar portafolio nacional', e);
-    }
-    return INITIAL_PORTFOLIO_NACIONAL;
-  });
+  // Estado de registros de historial (Solo en memoria / sincronizado desde Google Sheets)
+  const [registros, setRegistros] = useState<PrecioCierreRegistro[]>(
+    INITIAL_PRECIOS_CIERRE.map(normalizeRegistro)
+  );
 
-  // Cargar Portafolio Internacional (Binance bStock / Cripto)
-  const [portfolioInternacional, setPortfolioInternacional] = useState<PosicionInternacional[]>(() => {
-    try {
-      const saved = localStorage.getItem('portfolio_internacional');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((p) => ({ ...p, activo: normalizeTicker(p.activo) }));
-        }
-      }
-    } catch (e) {
-      console.error('Error al cargar portafolio internacional', e);
-    }
-    return INITIAL_PORTFOLIO_INTERNACIONAL;
-  });
+  // Estado de Portafolio Nacional (Casa de Bolsa MERCOSUR)
+  const [portfolioNacional, setPortfolioNacional] = useState<PortfolioPosicion[]>(
+    INITIAL_PORTFOLIO_NACIONAL
+  );
+
+  // Estado de Portafolio Internacional (Binance bStock / Cripto)
+  const [portfolioInternacional, setPortfolioInternacional] = useState<PosicionInternacional[]>(
+    INITIAL_PORTFOLIO_INTERNACIONAL
+  );
 
   // Notificaciones Toast
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-
-  // Guardar historial en localStorage
+  // Inicializar listener de Firebase Auth
   useEffect(() => {
-    try {
-      localStorage.setItem('precios_cierre_records', JSON.stringify(registros));
-    } catch (e) {
-      console.error('Error guardando registros en localStorage', e);
-    }
-  }, [registros]);
-
-  // Guardar Portafolio Nacional en localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('portfolio_nacional', JSON.stringify(portfolioNacional));
-    } catch (e) {
-      console.error('Error guardando portafolio nacional en localStorage', e);
-    }
-  }, [portfolioNacional]);
-
-  // Guardar Portafolio Internacional en localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('portfolio_internacional', JSON.stringify(portfolioInternacional));
-    } catch (e) {
-      console.error('Error guardando portafolio internacional en localStorage', e);
-    }
-  }, [portfolioInternacional]);
+    initAuth();
+  }, []);
 
   // Obtener último registro ordenado por fecha
   const sortedRegistros = [...registros].sort(
@@ -111,7 +66,7 @@ export default function App() {
   const latestRegistro = sortedRegistros[0];
   const prevRegistro = sortedRegistros[1];
 
-  // Guardar nuevo registro diario (Local + Google Sheets)
+  // Guardar nuevo registro diario (Envío directo a Google Sheets PRECIOS_CIERRE)
   const handleSaveRegistro = async (nuevoData: Omit<PrecioCierreRegistro, 'id'>) => {
     const indexExistente = registros.findIndex((r) => r.fecha === nuevoData.fecha);
     let nuevoHistorial: PrecioCierreRegistro[] = [];
@@ -133,33 +88,47 @@ export default function App() {
 
     setRegistros(nuevoHistorial);
 
-    // Si Google Sheets está conectado, guardar directamente en la pestaña PRECIOS_CIERRE
-    const token = getAccessToken();
-    if (token && spreadsheetId) {
+    if (spreadsheetId) {
+      const token = getAccessToken();
       try {
-        await appendRegistroToSheet(token, spreadsheetId, nuevoData);
+        await appendRegistroToSheet(token, spreadsheetId, nuevoData, appsScriptUrl);
         setToast({
           id: Date.now().toString(),
           type: 'success',
           title: 'Guardado en Google Sheets',
-          message: `El registro para la fecha ${nuevoData.fecha} se guardó en PRECIOS_CIERRE de su Google Sheet.`,
+          message: `El registro para la fecha ${nuevoData.fecha} se guardó directamente en la pestaña PRECIOS_CIERRE.`,
         });
       } catch (err: any) {
         console.error('Error al guardar en Google Sheets:', err);
         setToast({
           id: Date.now().toString(),
           type: 'error',
-          title: 'Guardado Localmente (Error Google Sheets)',
-          message: `El registro se guardó localmente pero falló el envío a Google Sheets: ${err.message || 'Error de conexión'}.`,
+          title: 'Error de Envío a Google Sheets',
+          message: `${err.message || 'Por favor inicie sesión con Google para permitir la escritura en la hoja.'}`,
         });
       }
     } else {
       setToast({
         id: Date.now().toString(),
-        type: 'success',
-        title: '¡Registro Guardado Con Éxito!',
-        message: `Se añadieron los precios para la fecha ${nuevoData.fecha} al historial local.`,
+        type: 'info',
+        title: 'Sin Hoja Vinculada',
+        message: 'Para guardar directamente en Google Sheets, primero vincule el enlace de su archivo de Google Sheets.',
       });
+    }
+  };
+
+  // Sincronizar cambios de Portafolio en RESUMEN ACTUAL
+  const syncResumenToSheet = async (
+    nac: PortfolioPosicion[],
+    inter: PosicionInternacional[]
+  ) => {
+    if (spreadsheetId) {
+      const token = getAccessToken();
+      try {
+        await updateResumenInSheet(token, spreadsheetId, nac, inter, appsScriptUrl);
+      } catch (err: any) {
+        console.error('Error sincronizando RESUMEN ACTUAL:', err);
+      }
     }
   };
 
@@ -190,7 +159,7 @@ export default function App() {
 
   // Restablecer a datos predeterminados
   const handleRestoreDefaults = () => {
-    if (confirm('¿Desea restablecer los datos de sus portafolios a la configuración predeterminada?')) {
+    if (confirm('¿Desea restablecer las posiciones a los valores iniciales predeterminados?')) {
       setRegistros(INITIAL_PRECIOS_CIERRE);
       setPortfolioNacional(INITIAL_PORTFOLIO_NACIONAL);
       setPortfolioInternacional(INITIAL_PORTFOLIO_INTERNACIONAL);
@@ -198,7 +167,7 @@ export default function App() {
         id: Date.now().toString(),
         type: 'info',
         title: 'Datos Restablecidos',
-        message: 'Se restauraron los portafolios Nacional (BNC, BPV, BVCC, RST-B) e Internacional (SPYB/USDT).',
+        message: 'Se restauraron los portafolios a la configuración base.',
       });
     }
   };
@@ -227,19 +196,20 @@ export default function App() {
 
   // Modificar cantidad en Portafolio Nacional
   const handleUpdateNacionalQuantity = (id: string, cantidad: number) => {
-    setPortfolioNacional((prev) =>
-      prev.map((pos) => {
-        if (pos.id === id) {
-          const inversionTotal = cantidad * pos.precioCompra + pos.comisiones + pos.iva + pos.derRegistro;
-          return {
-            ...pos,
-            cantidad,
-            inversionTotal,
-          };
-        }
-        return pos;
-      })
-    );
+    const updated = portfolioNacional.map((pos) => {
+      if (pos.id === id) {
+        const inversionTotal = cantidad * pos.precioCompra + pos.comisiones + pos.iva + pos.derRegistro;
+        return {
+          ...pos,
+          cantidad,
+          inversionTotal,
+        };
+      }
+      return pos;
+    });
+
+    setPortfolioNacional(updated);
+    syncResumenToSheet(updated, portfolioInternacional);
   };
 
   // Agregar lote en Portafolio Nacional
@@ -248,18 +218,24 @@ export default function App() {
       ...pos,
       id: `pos-${Date.now()}`,
     };
-    setPortfolioNacional([...portfolioNacional, nueva]);
+    const updated = [...portfolioNacional, nueva];
+    setPortfolioNacional(updated);
+    syncResumenToSheet(updated, portfolioInternacional);
+
     setToast({
       id: Date.now().toString(),
       type: 'success',
       title: 'Posición Agregada',
-      message: `Se añadió la compra de ${pos.codigo} al Portafolio Nacional.`,
+      message: `Se añadió ${pos.codigo} al Portafolio Nacional y se actualizó en Google Sheets.`,
     });
   };
 
   // Eliminar lote en Portafolio Nacional
   const handleDeleteNacionalPosicion = (id: string) => {
-    setPortfolioNacional(portfolioNacional.filter((p) => p.id !== id));
+    const updated = portfolioNacional.filter((p) => p.id !== id);
+    setPortfolioNacional(updated);
+    syncResumenToSheet(updated, portfolioInternacional);
+
     setToast({
       id: Date.now().toString(),
       type: 'info',
@@ -274,30 +250,35 @@ export default function App() {
       ...pos,
       id: `inter-${Date.now()}`,
     };
-    setPortfolioInternacional([...portfolioInternacional, nueva]);
+    const updated = [...portfolioInternacional, nueva];
+    setPortfolioInternacional(updated);
+    syncResumenToSheet(portfolioNacional, updated);
+
     setToast({
       id: Date.now().toString(),
       type: 'success',
       title: 'Activo Internacional Agregado',
-      message: `Se añadió ${pos.activo} ($${pos.inversionUsdt} USDT) al Portafolio Internacional.`,
+      message: `Se añadió ${pos.activo} ($${pos.inversionUsdt} USDT) y se actualizó en Google Sheets.`,
     });
   };
 
   // Modificar cantidad de tokens en Portafolio Internacional
   const handleUpdateInternacionalQuantity = (id: string, valorToken: number) => {
-    setPortfolioInternacional(
-      portfolioInternacional.map((pos) => {
-        if (pos.id === id) {
-          const invReal = pos.precioInicialCompra > 0 ? valorToken * pos.precioInicialCompra : pos.inversionUsdt;
-          return {
-            ...pos,
-            valorToken,
-            inversionUsdt: invReal,
-          };
-        }
-        return pos;
-      })
-    );
+    const updated = portfolioInternacional.map((pos) => {
+      if (pos.id === id) {
+        const invReal = pos.precioInicialCompra > 0 ? valorToken * pos.precioInicialCompra : pos.inversionUsdt;
+        return {
+          ...pos,
+          valorToken,
+          inversionUsdt: invReal,
+        };
+      }
+      return pos;
+    });
+
+    setPortfolioInternacional(updated);
+    syncResumenToSheet(portfolioNacional, updated);
+
     setToast({
       id: Date.now().toString(),
       type: 'info',
@@ -308,7 +289,10 @@ export default function App() {
 
   // Eliminar activo internacional
   const handleDeleteInternacionalPosicion = (id: string) => {
-    setPortfolioInternacional(portfolioInternacional.filter((p) => p.id !== id));
+    const updated = portfolioInternacional.filter((p) => p.id !== id);
+    setPortfolioInternacional(updated);
+    syncResumenToSheet(portfolioNacional, updated);
+
     setToast({
       id: Date.now().toString(),
       type: 'info',
@@ -338,6 +322,8 @@ export default function App() {
           onDataLoadedFromSheet={handleDataLoadedFromSheet}
           spreadsheetId={spreadsheetId}
           setSpreadsheetId={setSpreadsheetId}
+          appsScriptUrl={appsScriptUrl}
+          setAppsScriptUrl={setAppsScriptUrl}
           onToast={(type, title, message) =>
             setToast({
               id: Date.now().toString(),
@@ -393,7 +379,7 @@ export default function App() {
       <footer className="bg-slate-950 border-t border-slate-900 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>© 2026 Control de Portafolios - MERCOSUR & Binance bStock</p>
-          <p className="text-[11px] text-slate-600">Sincronización Dinámica con Google Sheets (PRECIOS_CIERRE & RESUMEN ACTUAL)</p>
+          <p className="text-[11px] text-slate-600">Sincronización Dinámica Directa con Google Sheets (PRECIOS_CIERRE & RESUMEN ACTUAL)</p>
         </div>
       </footer>
 

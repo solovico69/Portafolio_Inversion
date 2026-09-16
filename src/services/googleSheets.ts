@@ -1,3 +1,10 @@
+/**
+ * PROYECTO: Control de Precios de Cierre y Portafolio de Inversión
+ * DESARROLLO & ARQUITECTURA: Victor Solorzano
+ * ASISTENCIA TÉCNICA: Google AI Studio & Antigravity IDE
+ * ROL: Servicio de integración de APIs de Google Sheets y Firebase Auth
+ */
+
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -379,11 +386,26 @@ export const fetchResumenFromSheet = async (
 export const appendRegistroToSheet = async (
   token: string | null,
   spreadsheetId: string,
-  registro: Omit<PrecioCierreRegistro, 'id'>
+  registro: Omit<PrecioCierreRegistro, 'id'>,
+  webAppUrl?: string | null
 ): Promise<void> => {
+  // 1. Si existe URL de Google Apps Script Web App, intentar guardar directamente por la Web App
+  if (webAppUrl && webAppUrl.trim().startsWith('http')) {
+    try {
+      const resp = await fetch(webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'appendPrecio', registro }),
+      });
+      if (resp.ok) return;
+    } catch (e) {
+      console.warn('Fallo el guardado mediante Apps Script WebApp, intentando con Google API:', e);
+    }
+  }
+
+  // 2. Si no hay token de inicio de sesión de Google, requerir autenticación
   if (!token) {
-    // Si no hay token de inicio de sesión activo, la actualización se mantiene guardada localmente en localStorage
-    return;
+    throw new Error('Para guardar directamente en Google Sheets, inicie sesión con Google o configure la URL de Apps Script WebApp.');
   }
 
   const headUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/PRECIOS_CIERRE!A1:Z1`;
@@ -444,6 +466,88 @@ export const appendRegistroToSheet = async (
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error?.message || 'Error al guardar en Google Sheets');
   }
+};
+
+// Actualizar posiciones de portafolios en RESUMEN ACTUAL sin tocar columnas con fórmulas nativas (Regla #2)
+export const updateResumenInSheet = async (
+  token: string | null,
+  spreadsheetId: string,
+  nacional: PortfolioPosicion[],
+  internacional: PosicionInternacional[],
+  webAppUrl?: string | null
+): Promise<void> => {
+  // 1. Si existe URL de Google Apps Script Web App, intentar enviar a la Web App
+  if (webAppUrl && webAppUrl.trim().startsWith('http')) {
+    try {
+      const resp = await fetch(webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'updateResumen', nacional, internacional }),
+      });
+      if (resp.ok) return;
+    } catch (e) {
+      console.warn('Fallo actualización mediante Apps Script WebApp:', e);
+    }
+  }
+
+  if (!token) {
+    throw new Error('Para guardar los cambios de portafolio en su Google Sheet, inicie sesión con su cuenta de Google.');
+  }
+
+  // Leer primero las filas existentes de RESUMEN ACTUAL para mapear ubicaciones
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'RESUMEN ACTUAL'!A1:L60`;
+  const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
+  if (!getRes.ok) return;
+
+  const getData = await getRes.json();
+  const existingRows: any[][] = getData.values || [];
+
+  // Mapear y actualizar únicamente columnas de entrada (Acción, Cantidad, Precio Promedio)
+  const updatedRows = [...existingRows];
+
+  let modo: 'none' | 'nacional' | 'internacional' = 'none';
+  for (let i = 0; i < updatedRows.length; i++) {
+    const row = updatedRows[i];
+    if (!row || row.length === 0) continue;
+    const firstCell = String(row[0] || '').trim();
+
+    if (firstCell.toLowerCase().includes('global de acciones')) {
+      modo = 'nacional';
+      continue;
+    }
+    if (firstCell.toLowerCase().includes('empresa / cripto') || firstCell.toLowerCase().includes('compra de acciones tokenizadas')) {
+      modo = 'internacional';
+      continue;
+    }
+
+    if (modo === 'nacional' && firstCell && !firstCell.toLowerCase().includes('totales') && firstCell.toLowerCase() !== 'accion') {
+      const ticker = normalizeTicker(firstCell);
+      const pos = nacional.find((p) => normalizeTicker(p.codigo) === ticker);
+      if (pos) {
+        row[1] = pos.cantidad;
+        row[2] = pos.precioPromedio || pos.precioCompra;
+        // Ignorar de forma programática las columnas formuladas (Inversión Total, Precio Actual, Valor Actual, etc.)
+      }
+    } else if (modo === 'internacional' && firstCell && !firstCell.toLowerCase().includes('totales')) {
+      const ticker = normalizeTicker(firstCell);
+      const pos = internacional.find((p) => normalizeTicker(p.activo) === ticker);
+      if (pos) {
+        row[3] = pos.inversionUsdt;
+        row[4] = pos.valorToken;
+        row[5] = pos.precioInicialCompra;
+      }
+    }
+  }
+
+  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'RESUMEN ACTUAL'!A1:L${updatedRows.length}?valueInputOption=USER_ENTERED`;
+  await fetch(updateUrl, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ values: updatedRows }),
+  });
 };
 
 // Crear una hoja nueva de Google Spreadsheet
