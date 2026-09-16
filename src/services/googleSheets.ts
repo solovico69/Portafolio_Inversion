@@ -289,19 +289,16 @@ export const appendRegistroToSheet = async (
     throw new Error('No se ha configurado la URL de Apps Script WebApp. Pegue la URL del ejecutable de su Web App para guardar.');
   }
 
-  const response = await fetch(targetUrl.trim(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // Usar text/plain para evitar errores de preflight CORS en Apps Script
-    body: JSON.stringify({ action: 'appendPrecio', registro }),
-  });
-
-  if (!response.ok) {
-    throw new Error('Error al comunicar con la Web App de Apps Script.');
-  }
-
-  const resData = await response.json().catch(() => ({ success: true }));
-  if (resData.success === false) {
-    throw new Error(resData.error || 'Error al procesar el guardado en Apps Script.');
+  try {
+    await fetch(targetUrl.trim(), {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'appendPrecio', registro }),
+    });
+  } catch (err: any) {
+    console.error('Error enviando a Apps Script:', err);
+    throw new Error('No se pudo conectar con la Web App de Google Apps Script. Verifique la URL y los permisos.');
   }
 };
 
@@ -318,13 +315,14 @@ export const updateResumenInSheet = async (
     return;
   }
 
-  const response = await fetch(targetUrl.trim(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'updateResumen', nacional, internacional }),
-  });
-
-  if (!response.ok) {
-    console.error('Error al enviar actualización a la Web App de Apps Script.');
+  try {
+    await fetch(targetUrl.trim(), {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'updateResumen', nacional, internacional }),
+    });
+  } catch (err: any) {
+    console.error('Error al actualizar RESUMEN ACTUAL en Apps Script:', err);
   }
 };
