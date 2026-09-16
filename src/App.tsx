@@ -5,7 +5,7 @@
  * ROL: Controlador Principal de Estado y Vista (App.tsx)
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { PrecioCierreRegistro, PortfolioPosicion, PosicionInternacional, ToastMessage } from './types';
 import {
   INITIAL_PRECIOS_CIERRE,
@@ -21,19 +21,19 @@ import { PortfolioSummary } from './components/PortfolioSummary';
 import { InternationalPortfolio } from './components/InternationalPortfolio';
 import { Toast } from './components/Toast';
 import { GoogleSheetsSync } from './components/GoogleSheetsSync';
-import { getAccessToken, appendRegistroToSheet, updateResumenInSheet, initAuth } from './services/googleSheets';
+import { appendRegistroToSheet, updateResumenInSheet } from './services/googleSheets';
 
 export default function App() {
   // Pestaña activa: 'form' (Registrar Precios Diarios) por defecto
   const [activeTab, setActiveTab] = useState<'form' | 'portfolio' | 'international' | 'history' | 'charts'>('form');
 
-  // Spreadsheet ID & Apps Script Web App URL de Google Sheets
+  // Spreadsheet ID & Apps Script Web App URL de Google Sheets (con fallbacks desde variables VITE_*)
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
-    return localStorage.getItem('google_spreadsheet_id');
+    return localStorage.getItem('google_spreadsheet_id') || import.meta.env.VITE_GOOGLE_SPREADSHEET_ID || null;
   });
 
   const [appsScriptUrl, setAppsScriptUrl] = useState<string | null>(() => {
-    return localStorage.getItem('apps_script_url');
+    return localStorage.getItem('apps_script_url') || import.meta.env.VITE_APPS_SCRIPT_URL || null;
   });
 
   // Estado de registros de historial (Solo en memoria / sincronizado desde Google Sheets)
@@ -54,11 +54,6 @@ export default function App() {
   // Notificaciones Toast
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  // Inicializar listener de Firebase Auth
-  useEffect(() => {
-    initAuth();
-  }, []);
-
   // Obtener último registro ordenado por fecha
   const sortedRegistros = [...registros].sort(
     (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
@@ -66,7 +61,7 @@ export default function App() {
   const latestRegistro = sortedRegistros[0];
   const prevRegistro = sortedRegistros[1];
 
-  // Guardar nuevo registro diario (Envío directo a Google Sheets PRECIOS_CIERRE)
+  // Guardar nuevo registro diario (Envío directo a Google Sheets PRECIOS_CIERRE vía Apps Script)
   const handleSaveRegistro = async (nuevoData: Omit<PrecioCierreRegistro, 'id'>) => {
     const indexExistente = registros.findIndex((r) => r.fecha === nuevoData.fecha);
     let nuevoHistorial: PrecioCierreRegistro[] = [];
@@ -88,10 +83,12 @@ export default function App() {
 
     setRegistros(nuevoHistorial);
 
-    if (spreadsheetId) {
-      const token = getAccessToken();
+    const activeSheetId = spreadsheetId || import.meta.env.VITE_GOOGLE_SPREADSHEET_ID || '';
+    const activeScriptUrl = appsScriptUrl || import.meta.env.VITE_APPS_SCRIPT_URL || '';
+
+    if (activeSheetId || activeScriptUrl) {
       try {
-        await appendRegistroToSheet(token, spreadsheetId, nuevoData, appsScriptUrl);
+        await appendRegistroToSheet(activeSheetId, nuevoData, activeScriptUrl);
         setToast({
           id: Date.now().toString(),
           type: 'success',
@@ -104,15 +101,15 @@ export default function App() {
           id: Date.now().toString(),
           type: 'error',
           title: 'Error de Envío a Google Sheets',
-          message: `${err.message || 'Por favor inicie sesión con Google para permitir la escritura en la hoja.'}`,
+          message: `${err.message || 'Verifique la URL de la Web App de Apps Script.'}`,
         });
       }
     } else {
       setToast({
         id: Date.now().toString(),
         type: 'info',
-        title: 'Sin Hoja Vinculada',
-        message: 'Para guardar directamente en Google Sheets, primero vincule el enlace de su archivo de Google Sheets.',
+        title: 'Sin Enlace Configurado',
+        message: 'Para guardar directamente en Google Sheets, vincule el enlace de su ejecutable de Apps Script WebApp.',
       });
     }
   };
@@ -122,10 +119,12 @@ export default function App() {
     nac: PortfolioPosicion[],
     inter: PosicionInternacional[]
   ) => {
-    if (spreadsheetId) {
-      const token = getAccessToken();
+    const activeSheetId = spreadsheetId || import.meta.env.VITE_GOOGLE_SPREADSHEET_ID || '';
+    const activeScriptUrl = appsScriptUrl || import.meta.env.VITE_APPS_SCRIPT_URL || '';
+
+    if (activeSheetId || activeScriptUrl) {
       try {
-        await updateResumenInSheet(token, spreadsheetId, nac, inter, appsScriptUrl);
+        await updateResumenInSheet(activeSheetId, nac, inter, activeScriptUrl);
       } catch (err: any) {
         console.error('Error sincronizando RESUMEN ACTUAL:', err);
       }
@@ -317,7 +316,7 @@ export default function App() {
       {/* Contenido Principal */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         
-        {/* Componente de Sincronización con Google Sheets */}
+        {/* Componente de Sincronización con Google Sheets & Apps Script */}
         <GoogleSheetsSync
           onDataLoadedFromSheet={handleDataLoadedFromSheet}
           spreadsheetId={spreadsheetId}
@@ -379,7 +378,7 @@ export default function App() {
       <footer className="bg-slate-950 border-t border-slate-900 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>© 2026 Control de Portafolios - MERCOSUR & Binance bStock</p>
-          <p className="text-[11px] text-slate-600">Sincronización Dinámica Directa con Google Sheets (PRECIOS_CIERRE & RESUMEN ACTUAL)</p>
+          <p className="text-[11px] text-slate-600">Sincronización Directa con Google Sheets & Apps Script (PRECIOS_CIERRE & RESUMEN ACTUAL)</p>
         </div>
       </footer>
 
